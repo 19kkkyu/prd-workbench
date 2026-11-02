@@ -1,0 +1,7 @@
+.env
+.venv
+.deps
+data
+__pycache__
+tests
+.git
