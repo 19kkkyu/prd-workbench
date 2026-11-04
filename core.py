@@ -14,12 +14,11 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from dotenv import load_dotenv
 from pydantic import BaseModel, ConfigDict
 from parsing import PARSER_VERSION, parse_document, pending_images, refresh_text
+from settings import setting
 
 ROOT = Path(__file__).resolve().parent
-load_dotenv(ROOT / ".env")
 
 
 def now():
@@ -70,7 +69,7 @@ class VisionResult(BaseModel):
 
 class Store:
     def __init__(self, directory=None):
-        configured = directory or os.getenv("DATA_DIR", "data")
+        configured = directory or setting("DATA_DIR", "data")
         self.root = Path(configured)
         if not self.root.is_absolute():
             self.root = ROOT / self.root
@@ -190,11 +189,15 @@ class Store:
             db.execute("DELETE FROM documents WHERE id=?", (doc_id,))
         (self.root / "originals" / doc_id).unlink(missing_ok=True)
 
+    def original_bytes(self, doc_id):
+        self.get(doc_id)
+        return (self.root / "originals" / doc_id).read_bytes()
+
     def reserve_call(self):
         with self.db() as db:
             db.execute("BEGIN IMMEDIATE")
             count = db.execute("SELECT COUNT(*) FROM calls WHERE substr(created,1,10)=?", (now()[:10],)).fetchone()[0]
-            if count >= int(os.getenv("DAILY_CALL_LIMIT", "150")):
+            if count >= int(setting("DAILY_CALL_LIMIT", "150")):
                 raise ValueError("已达到应用今日调用上限，请明日再试或调整管理员配置。")
             db.execute("INSERT INTO calls VALUES (?)", (now(),))
 
@@ -211,7 +214,7 @@ class Store:
 
 
 def chunks(units, size=None):
-    limit = size or int(os.getenv("CHUNK_CHARS", "18000"))
+    limit = size or int(setting("CHUNK_CHARS", "18000"))
     if limit < 1000:
         raise ValueError("CHUNK_CHARS 至少为 1000。")
     result, group, used = [], [], 0
@@ -309,6 +312,7 @@ def recognize_images(store, doc_id, ai, progress=lambda *_: None):
     doc = store.get(doc_id)
     token = store.claim(doc_id, ai.provider, ai.model)
     try:
+        doc = store.get(doc_id)
         read_images(store, doc, ai, token, progress)
         store.release_ready(doc_id, token)
     except Exception as exc:
@@ -320,6 +324,7 @@ def analyze(store, doc_id, ai, progress=lambda *_: None):
     doc = store.get(doc_id)
     token = store.claim(doc_id, ai.provider, ai.model)
     try:
+        doc = store.get(doc_id)
         read_images(store, doc, ai, token, progress)
         groups = chunks(doc["parsed"])
         if not groups:

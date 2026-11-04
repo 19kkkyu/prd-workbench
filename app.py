@@ -1,3 +1,4 @@
+from settings import setting, cloud_runtime
 import json
 import os
 import base64
@@ -8,6 +9,7 @@ import streamlit as st
 
 from core import AI, ROOT, Store, analyze, ask, error_message, parse_document, recognize_images
 from parsing import display_units, pending_images
+from cloud_store import CloudStorageError, SupabaseStore
 from exports import FIELDS, OVERVIEW, excel, pdf, value, word
 
 st.set_page_config(page_title="PRD 文档提炼工作台", page_icon="📑", layout="wide")
@@ -25,19 +27,41 @@ div.stButton > button {border-radius:8px}
 
 @st.cache_resource
 def store_instance():
+    backend = setting("STORAGE_BACKEND", "local").lower()
+    if backend == "supabase":
+        cloud = SupabaseStore()
+        cloud.verify()
+        return cloud
+    if backend != "local":
+        raise ValueError("STORAGE_BACKEND 仅支持 local 或 supabase。")
+    if cloud_runtime():
+        raise ValueError("云端部署请设置 STORAGE_BACKEND=supabase，避免历史写入临时磁盘。")
     return Store()
 
 
-store = store_instance()
-provider = os.getenv("AI_PROVIDER", "openai").lower()
-model = os.getenv("OPENAI_MODEL", "gpt-4.1-mini") if provider == "openai" else os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
-key = os.getenv("OPENAI_API_KEY" if provider == "openai" else "GEMINI_API_KEY", "")
+try:
+    store = store_instance()
+except (CloudStorageError,ValueError) as exc:
+    st.error(str(exc))
+    st.info("请管理员按照 CLOUD_DEPLOY.md 完成后台配置，然后重启应用。")
+    st.stop()
+provider = setting("AI_PROVIDER", "openai").lower()
+model = setting("OPENAI_MODEL", "gpt-4.1-mini") if provider == "openai" else setting("GEMINI_MODEL", "gemini-2.5-flash")
+key = setting("OPENAI_API_KEY" if provider == "openai" else "GEMINI_API_KEY", "")
 with st.sidebar:
     st.markdown("### 📑 文档提炼工作台")
     st.caption("每份文档，都有清晰的需求脉络")
     page = st.radio("工作空间", ["上传与提炼", "历史记录", "使用说明"], label_visibility="collapsed")
     st.divider()
-    st.caption("本机试用 · 历史持久保存\n\n团队版无登录，共享历史记录。")
+    st.caption(("云端运行 · 历史保存至 Supabase" if isinstance(store,SupabaseStore) else "本机试用 · 历史持久保存") + "\n\n团队版无登录，共享历史记录。")
+
+
+def history_records():
+    try:
+        return store.list()
+    except CloudStorageError as exc:
+        st.error(str(exc))
+        st.stop()
 
 
 def run_analysis(doc_id):
@@ -58,7 +82,7 @@ def run_analysis(doc_id):
 def show_document(doc_id):
     try:
         doc = store.get(doc_id)
-    except ValueError as exc:
+    except (CloudStorageError,ValueError) as exc:
         st.warning(str(exc))
         return
     st.subheader(doc["name"])
@@ -72,6 +96,15 @@ def show_document(doc_id):
         if st.button("刷新 / 恢复中断任务", key=f"recover_{doc_id}"):
             store.recover(doc_id)
             st.rerun()
+        return
+    if doc["status"] == "deleting":
+        st.warning("上次删除尚未完成。请重试，以清理云端文件。")
+        if st.button("完成删除", key=f"finish_delete_{doc_id}"):
+            try:
+                store.delete(doc_id)
+                st.rerun()
+            except (CloudStorageError,ValueError) as exc:
+                st.error(str(exc))
         return
     if doc["error"]:
         st.error(doc["error"])
@@ -153,9 +186,12 @@ def show_document(doc_id):
         with st.expander("查看已读取原文"):
             source_view(doc)
     with st.expander("原始文件与记录管理"):
-        path = store.root / "originals" / doc_id
-        if path.exists():
-            st.download_button("下载原始文件", path.read_bytes(), doc["name"], key=f"original_{doc_id}")
+        if st.button("准备下载原始文件", key=f"prepare_original_{doc_id}"):
+            try:
+                raw = store.original_bytes(doc_id)
+                st.download_button("下载原始文件", raw, doc["name"], key=f"original_{doc_id}")
+            except (CloudStorageError,ValueError,OSError):
+                st.error("原始文件暂时无法下载，请检查存储连接或项目是否暂停。")
         confirmed = st.checkbox("删除这份原文、提炼结果和追问记录", key=f"confirm_{doc_id}")
         if st.button("删除记录", disabled=not confirmed, key=f"delete_{doc_id}"):
             try:
@@ -163,7 +199,7 @@ def show_document(doc_id):
                 st.session_state.pop(f"exports_{doc_id}", None)
                 st.session_state.pop("current_id", None)
                 st.rerun()
-            except ValueError as exc:
+            except (CloudStorageError,ValueError) as exc:
                 st.error(str(exc))
 
 
@@ -242,7 +278,7 @@ if page == "上传与提炼":
             if added:
                 st.session_state.current_id = added[-1]
     st.markdown("### 02  查看提炼结果")
-    records = store.list()
+    records = history_records()
     if records:
         ids = [r["id"] for r in records]
         current = st.session_state.get("current_id", ids[0])
@@ -254,12 +290,12 @@ if page == "上传与提炼":
 elif page == "历史记录":
     st.title("历史记录")
     st.caption("原始文档、提炼结果和追问记录持久保存。团队部署时，此处为共享历史。")
-    records = store.list()
+    records = history_records()
     x, y = st.columns(2)
     search = x.text_input("搜索文件名")
     project = y.selectbox("项目分类", ["全部", *sorted({r["project"] for r in records})])
     records = [r for r in records if search.lower() in r["name"].lower() and (project == "全部" or r["project"] == project)]
-    labels = {"ready": "已解析", "done": "已完成", "failed": "可重试", "processing": "处理中"}
+    labels = {"ready": "已解析", "done": "已完成", "failed": "可重试", "processing": "处理中", "deleting":"删除待完成"}
     if records:
         st.dataframe([{"文件":r["name"], "项目":r["project"], "上传时间":r["created"][:16], "状态":labels[r["status"]]} for r in records], hide_index=True, width="stretch")
         selected = st.selectbox("打开历史文档", [r["id"] for r in records], format_func=lambda x: next(f"{r['name']} · {r['created'][:16]}" for r in records if r["id"] == x))
@@ -281,5 +317,5 @@ else:
 
 **图片与扫描件**：保留并展示 Word 内嵌图片；PDF 的扫描页、图片及矢量图会生成页面图像。后台视觉模型负责文字转写、表格读取和流程图理解，结果保存后纳入提炼。可在原文区域先点击“识别图片内容”，也可直接提炼时自动识别。未配置 API 时会标记待识别，不会把未识别图片当成已解析内容。模糊图像和复杂图形仍需人工核对；Word 外链图片需先嵌入，SmartArt 等对象建议转为 PDF。
 
-**小团队使用**：支持多个浏览器会话，历史共享；没有账号和文档隔离。模型费用由配置的密钥承担。部署时必须挂载持久化数据目录，并定期备份。
+**小团队使用**：支持多个浏览器会话，历史共享；没有账号和文档隔离。模型费用由配置的密钥承担。免费云端版使用 Supabase 保存历史和原文，不依赖网页临时磁盘；低频闲置后可能需管理员恢复暂停的 Supabase 项目。后台配置和交接步骤见 CLOUD_DEPLOY.md。本机版继续保存在本地。
 """)

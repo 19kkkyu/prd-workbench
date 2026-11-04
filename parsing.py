@@ -1,3 +1,4 @@
+from settings import setting
 """Structure-aware reading units; independent from model-sized processing chunks."""
 import base64
 import io
@@ -182,7 +183,7 @@ def _pdf_blocks(raw, notes):
 
 def parse_document(name, raw):
     suffix = Path(name).suffix.lower()
-    max_mb = int(os.getenv("MAX_FILE_MB", "200"))
+    max_mb = int(setting("MAX_FILE_MB", "200"))
     if max_mb > 0 and len(raw) > max_mb * 1024 * 1024:
         raise ValueError(f"文件超过当前 {max_mb} MB 大小上限。")
     if not raw:
@@ -207,7 +208,7 @@ def parse_document(name, raw):
         for block in blocks:
             pages.setdefault(block["page"], []).append(block)
         units = [refresh_text({"source":label, "blocks":items}) for label,items in pages.items()]
-    max_chars = int(os.getenv("MAX_DOCUMENT_CHARS", "600000"))
+    max_chars = int(setting("MAX_DOCUMENT_CHARS", "600000"))
     if max_chars > 0 and sum(len(u["text"]) for u in units) > max_chars:
         raise ValueError("文档文字超过后台处理容量，请按章节拆分；未截断任何内容。")
     return units, list(dict.fromkeys(notes))

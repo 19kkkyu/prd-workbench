@@ -2,6 +2,10 @@
 
 面向产品经理的轻量网页工具。批量上传 BRD / PRD，每份独立生成详细总结与需求清单，原文与结果保存在共享历史中。支持 Word、PDF、Excel 导出，以及默认收起的文档追问。无跨项目分析，无待确认问题栏目。
 
+## 免费云端部署
+
+推荐低频使用采用 **Streamlit Community Cloud + Supabase Free**，详细步骤见 [免费云端部署与交接](CLOUD_DEPLOY.md)。支持后台 Secrets、私有云端原文与历史，以及 200 MB 文件的分块存储。无需本机常开或安装 Docker。云端须配置 `STORAGE_BACKEND=supabase`；本机默认继续使用 SQLite。现有本机历史不自动上传。
+
 ## 本机启动
 
 需要 Python 3.11 或 3.12。进入此目录：
