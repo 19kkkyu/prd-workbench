@@ -1,10 +1,12 @@
 services:
   workbench:
-    build: .
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
     ports:
       - "8501:8501"
     env_file:
-      - .env
+      - ../../.env
     environment:
       DATA_DIR: /data
     volumes:

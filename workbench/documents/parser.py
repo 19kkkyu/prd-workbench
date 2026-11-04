@@ -1,4 +1,4 @@
-from settings import setting
+from workbench.config import setting
 """Structure-aware reading units; independent from model-sized processing chunks."""
 import base64
 import io

@@ -1,76 +1,55 @@
-# PRD 文档提炼工作台
+# PRD 项目提炼工作台
 
-面向产品经理的轻量网页工具。批量上传 BRD / PRD，每份独立生成详细总结与需求清单，原文与结果保存在共享历史中。支持 Word、PDF、Excel 导出，以及默认收起的文档追问。无跨项目分析，无待确认问题栏目。
+按“项目 → 产品 → 文档”组织 PRD。一个项目可包含多个产品，每个产品可上传多份文档，生成项目总 Summary、各产品 Summary 和详细需求清单。
 
-## 免费云端部署
+## 功能
 
-推荐低频使用采用 **Streamlit Community Cloud + Supabase Free**，详细步骤见 [免费云端部署与交接](CLOUD_DEPLOY.md)。支持后台 Secrets、私有云端原文与历史，以及 200 MB 文件的分块存储。无需本机常开或安装 Docker。云端须配置 `STORAGE_BACKEND=supabase`；本机默认继续使用 SQLite。现有本机历史不自动上传。
+- 项目命名与产品分组，支持 PDF、DOCX、TXT、Markdown。
+- 支持文档中的表格、图片与扫描页识别，单文件最高 200 MB。
+- 首页只负责提炼和展示本次结果；成功后自动保存 Summary。
+- 历史页管理结果、项目名称与日期筛选，不展示或保存原始文档。
+- Word / PDF 导出完整报告，Excel 导出带产品归属的需求清单。
+- 可选追问依据 Summary 回答，不回查原文。
+- 后台配置 OpenAI / Gemini，页面不暴露密钥或模型设置。
 
-## 本机启动
+## 云端部署
 
-需要 Python 3.11 或 3.12。进入此目录：
+免费低频方案使用 Streamlit Community Cloud + Supabase 数据库。见 [部署说明](docs/CLOUD_DEPLOY.md)。旧版升级必须先执行新版 SQL；见 [升级与迁移](docs/UPGRADE.md)。
 
-```powershell
-python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-Copy-Item .env.example .env
-# 编辑 .env，填写任意一种服务的密钥和有权限的模型名称
-.\.venv\Scripts\python.exe -m streamlit run app.py --server.address 127.0.0.1
-```
+本项目未承诺模型和云平台永久免费或持续在线。真实云端和模型效果需要部署后验证。
 
-浏览器打开 http://localhost:8501 。也可使用 `start.ps1`（已准备 Python 环境时）。未配置密钥也可上传、解析、下载原文和查看历史；AI 结果需真实模型调用后生成，没有伪造的演示结果。
+## 本机运行
 
-## 模型配置
-
-由管理员在 `.env` 或服务端环境变量中设置 `AI_PROVIDER=openai` 或 `gemini`，填写对应的 `OPENAI_API_KEY` / `OPENAI_MODEL` 或 `GEMINI_API_KEY` / `GEMINI_MODEL`，保存后重启服务。前台不提供服务切换、模型名称、密钥或连接测试。示例模型名不是账号可用性保证，需选择支持图片输入与结构化输出的模型。不会自动付费、充值或跨服务重试。没有 OpenAI 额度时可在后台改为 Gemini，是否免费取决于账号与模型额度。
-
-密钥只在后台读取，不进入数据库，不提供前台输入框。不要把 `.env` 或密钥提交到 GitHub。
-
-## 使用流程
-
-1. 批量上传 PDF / DOCX / TXT / MD，选择可选的项目分类。
-2. 选择仅解析保存，或保存后逐份提炼；解析和提炼失败均不影响其他文件。图片会先保存，开始提炼时自动识别；也可在原文区单独识别图片并保存转写结果。
-3. 查看总结、筛选需求，展开业务规则、角色、异常、验收标准和原文证据。
-4. 生成 Word / PDF / Excel 后下载；重新导出不调用 AI。
-5. 在历史中重新打开、重新提炼、下载原文或删除记录。
-6. 如有需要，展开追问，围绕当前文档提问；问题和回答也保存在历史中。
-
-每次上传创建独立记录，同名文件也不覆盖。重新提炼成功才替换旧结果；失败保留上次成功结果并显示错误。原文缺失字段显示“未说明”。生成结果仍应由产品经理核对。
-
-## 文档处理边界
-
-- 旧 `.doc` 请先另存为 `.docx`。处理 PDF 可提取的文字，以及 DOCX 正文与表格，保留顺序。
-- 支持 DOCX 内嵌图片，以及 PDF 扫描页、位图和矢量图的页面识别。视觉模型负责文字转写、表格读取及流程关系理解；图片与识别结果一起保存。没有后台 API 时标记为待识别，不伪装成已解析。识别失败会阻止本轮提炼，可重试；已成功识别的图片不重复调用。
-- 图片文字转写与图形关系描述分开标注。模糊内容会显示识别说明，准确率仍需用真实 API 和样本文档验证。外链图片需先嵌入 Word；SmartArt 等非图片对象建议转为 PDF。复杂文本框、批注、页眉页脚不在 DOCX 直接读取范围。
-- 原文按结构分组：短一级章节完整展示；含三个及以上编号二级标题时按二级标题分组，三级及以下跟随二级；超过 8000 字且有多个明确二级标题的章节也可拆分。表格与图片不作为细碎独立段落。误设成 Heading 样式的正文句子不会直接当标题。没有可靠标题的 PDF 按页展示。
-- 章节展示与 AI 容量分段独立。保存过的未提炼文档会自动从原文升级解析结构，无需重新上传。已有报告保留来源标识，只调整阅读视图。校验提炼来源标识和摘录是否存在于读取文本，这不等于保证每个语义判断完全正确，尤其是图片转写可能有误。
-- 长文档按字符分段，无静默截断。所有片段的详细需求原样汇集，概览另行整合。跨片段可能有重复需求，优先保留细节。
-- 问答逐段读取整份原文并整合，不启用外部搜索。长文档问答可能较慢。
-- 同一文档同一时刻仅一个提炼任务。中断超过 15 分钟可在页面恢复。批量任务在当前会话顺序执行，并非独立后台队列；进程退出时未完成任务需恢复重试。
-
-## 存储与费用控制
-
-`DATA_DIR` 默认是本目录 `data/`，包含 `history.sqlite3` 和 `originals/`。结果与问答保存在 SQLite，导出文件随时生成，无需再次调用 AI。原文按随机标识存储，防止同名覆盖。
-
-默认单文件上限 200 MB。`MAX_FILE_MB` 为单文件解析上限；上传组件上限另外由 `.streamlit/config.toml` 的 `server.maxUploadSize` 设置，增大时两处一并修改并重启。`MAX_FILE_MB=0` 仅取消应用层大小检查，上传组件仍有上限。文件需占用内存，不建议设置为无限。`MAX_DOCUMENT_CHARS` 为单文档文字容量。`CHUNK_CHARS` 为 AI 处理分段大小，不影响原文章节展示。
-
-`DAILY_CALL_LIMIT` 是应用内每日调用次数上限，所有用户共享，按北京时间计数。图片识别和失败请求也计数。限制次数而非精确金额，不能代替服务商账户额度设置。
-
-## 小团队部署
-
-代码保存到独立 GitHub 仓库，服务运行在支持 Python 和持久化磁盘的平台，GitHub Pages 无法运行后台。当前交付未创建远端仓库或云服务。
-
-提供 `Dockerfile` 与 `compose.yaml`。复制 `.env.example` 为 `.env`、配置密钥后：
+使用 Python 3.12，安装 `requirements.txt`，复制 `.env.example` 为 `.env` 并在本机填写配置：
 
 ```text
-docker compose up --build -d
+python -m pip install -r requirements.txt
+python -m streamlit run app.py
 ```
 
-访问服务器的 8501 端口，正式网址可在部署平台配置 HTTPS。数据保存在命名卷 `prd_data`，更新容器不会丢历史。不要使用 `docker compose down -v`，这会删除持久化卷。
+Windows 已准备好 Python 环境时也可运行 `scripts/start.ps1`。本机默认 SQLite，只存 Summary，数据库位于 `data/summaries.sqlite3`。
 
-无登录，所有访问者可查看、下载共享历史并调用服务端模型。SQLite WAL 支持同一服务实例的小团队并发会话，不使用多副本或网络共享文件系统。多实例需迁移数据库和文件存储。
+## 目录
 
-备份前先停止应用，再复制整个 `DATA_DIR` 或备份命名卷，不能只复制正在写入的单个 sqlite 文件。部署必须提供持久化存储。
+```text
+app.py                    Streamlit 稳定入口
+workbench/
+  config.py               后台配置读取
+  views/                  上传、结果与历史页面
+  documents/              文档结构及图片提取
+  intelligence/           模型、提炼与项目汇总
+  storage/                Summary 数据模型及本机/云端保存
+  exports/                Word、PDF、Excel 导出
+deploy/
+  supabase/setup.sql      云端数据库初始化
+  docker/                 可选 Docker 部署
+scripts/                  本机启动、旧结果迁移
+docs/                     部署与升级说明
+tests/                    自动验证
+.streamlit/               页面配置与无密钥的 Secrets 模板
+```
+
+可选 Docker 从仓库根目录运行 `docker compose -f deploy/docker/compose.yaml up --build -d`。持久化卷只保存 Summary。
 
 ## 验证
 
@@ -78,4 +57,4 @@ docker compose up --build -d
 python -m unittest discover -s tests -v
 ```
 
-离线测试使用隔离假模型，只检验处理流程，不代表真实模型质量。正式验收还需配置真实 API 并上传代表性文档。
+离线测试使用模拟模型与 HTTP 接口，不代表真实 API 准确率或公网部署成功。代码升级保留旧数据，不会自动删除旧版文档或报告。
