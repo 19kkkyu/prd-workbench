@@ -20,6 +20,18 @@ def error_message(exc):
             for item in error.get("details", []) or []:
                 if isinstance(item, dict) and item.get("reason") in {"API_KEY_INVALID", "API_KEY_EXPIRED"}:
                     return "模型密钥无效或已失效，请管理员更新后台 API Key。（AI-KEY）"
+            # Match known causes internally, without displaying any provider text.
+            message = str(error.get("message", "")).lower()
+            status = error.get("status", "")
+            if code == 400:
+                if any(x in message for x in ("user location is not supported", "free tier is not available in your country", "unsupported location")):
+                    return "模型服务明确拒绝了当前账号或运行平台的地区，请检查模型平台的地区支持情况。（AI-REGION）"
+                if status == "FAILED_PRECONDITION":
+                    return "模型账户未满足调用前提，请检查该账号和模型的免费层资格、地区及服务启用状态。（AI-PRECONDITION）"
+                if any(x in message for x in ("api key not valid", "api key expired")):
+                    return "模型密钥无效或已失效，请管理员更新后台 API Key。（AI-KEY）"
+                if any(x in message for x in ("response_schema", "responseschema", "response_json_schema", "responsejsonschema", "additionalproperties", "json_schema")):
+                    return "模型拒绝了结构化报告格式，需检查所选模型的结构化输出兼容性。（AI-SCHEMA）"
     messages = {
         400: "模型拒绝了请求，请检查模型是否支持当前参数和结构化输出；也可能是账号地区或密钥限制。（AI-400）",
         401: "模型认证失败，请管理员检查 AI_PROVIDER 与对应 API Key 是否匹配。（AI-401）",
@@ -81,7 +93,7 @@ class AI:
         with genai.Client(api_key=self.key, http_options=types.HttpOptions(timeout=120000)) as client:
             result = client.models.generate_content(model=self.model, contents=content,
                 config=types.GenerateContentConfig(system_instruction=system,
-                    response_mime_type="application/json", response_schema=schema))
+                    response_mime_type="application/json", response_json_schema=schema.model_json_schema()))
             if not result.text:
                 raise ValueError("模型未返回可解析内容。")
             return schema.model_validate_json(result.text)
