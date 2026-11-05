@@ -38,6 +38,23 @@ def run():
 
 **运行配置**：模型和密钥由管理员在后台配置。免费云端使用 Supabase 数据库，不再需要文件存储桶。首次升级需执行 deploy/supabase/setup.sql。新版不读取、不自动删除旧版原文及历史库，迁移办法见 docs/UPGRADE.md。
 ''')
+        with st.expander('模型连接诊断（不读取上传文档）'):
+            st.caption('发送固定测试文字，先检查基础调用，再检查完整报告格式。最多两次请求，不自动重试、不保存结果；计入模型调用额度。')
+            if st.button('运行连接诊断'):
+                from workbench.config import setting
+                from workbench.intelligence.diagnostics import probe_gemini
+                if setting('AI_PROVIDER','openai').strip().lower() != 'gemini':
+                    st.info('此诊断入口用于 Gemini。')
+                else:
+                    try:
+                        with st.spinner('正在测试模型连接…'):
+                            checks = probe_gemini(store_resource(), setting('GEMINI_MODEL','gemini-2.5-flash'), setting('GEMINI_API_KEY'))
+                        for check in checks:
+                            (st.success if check['ok'] else st.error)(check['step'])
+                            st.code(check['detail'], language=None)
+                        st.caption('可复制以上诊断文字反馈；这里不显示密钥或业务文档。')
+                    except (StorageError, ValueError) as exc:
+                        st.error(str(exc))
         return
     try:
         with st.spinner('正在连接项目与 Summary 历史…'):store=store_resource()
