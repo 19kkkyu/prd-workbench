@@ -1,15 +1,48 @@
 from workbench.config import setting
 
+class ModelError(Exception):
+    """A safe diagnostic; never includes provider messages or document text."""
+
+
 def error_message(exc):
-    # Do not expose provider response bodies or credentials in the UI / persistent log.
+    if isinstance(exc, ModelError):
+        return str(exc)
     code = getattr(exc, "status_code", None) or getattr(exc, "code", None)
-    if code in (401, 403):
-        return "模型认证或访问失败，请检查密钥及模型权限。"
-    if code == 429:
-        return "模型额度不足或请求过于频繁，请联系管理员检查后台配置和额度。"
-    if isinstance(exc, ValueError):
-        return "处理未完成：配置、文档或模型返回内容未通过校验，请检查设置后重试。"
-    return "模型连接或处理失败，可能是网络、服务暂时不可用或返回内容不完整。请稍后重试。"
+    try:
+        code = int(code)
+    except (TypeError, ValueError):
+        code = None
+    # Inspect only structured, allowlisted reasons; never render response bodies.
+    details = getattr(exc, "details", None) or getattr(exc, "body", None)
+    if isinstance(details, dict):
+        error = details.get("error", details)
+        if isinstance(error, dict):
+            for item in error.get("details", []) or []:
+                if isinstance(item, dict) and item.get("reason") in {"API_KEY_INVALID", "API_KEY_EXPIRED"}:
+                    return "模型密钥无效或已失效，请管理员更新后台 API Key。（AI-KEY）"
+    messages = {
+        400: "模型拒绝了请求，请检查模型是否支持当前参数和结构化输出；也可能是账号地区或密钥限制。（AI-400）",
+        401: "模型认证失败，请管理员检查 AI_PROVIDER 与对应 API Key 是否匹配。（AI-401）",
+        402: "模型账户余额或计费条件不满足，请检查该模型是否有可用免费额度。（AI-402）",
+        403: "模型访问被拒绝，请检查密钥权限、API 是否启用及账号或地区限制。（AI-403）",
+        404: "模型或接口不存在，请管理员核对后台 MODEL 名称及账号是否可用。（AI-404）",
+        408: "模型请求超时，请稍后重试。（AI-TIMEOUT）",
+        413: "模型请求内容过大，请减少本次文档或图片数量。（AI-413）",
+        429: "模型额度已用尽或调用过于频繁，请在模型平台查看免费额度与调用限制；稍后重试不一定能恢复。（AI-429）",
+    }
+    if code in messages:
+        return messages[code]
+    if code is not None and 500 <= code <= 599:
+        return "模型服务暂时不可用，请稍后重试。（AI-SERVER）"
+    import httpx
+    from pydantic import ValidationError
+    if isinstance(exc, (httpx.TimeoutException, TimeoutError)) or type(exc).__name__ == "APITimeoutError":
+        return "等待模型响应超时，请稍后重试。（AI-TIMEOUT）"
+    if isinstance(exc, (httpx.TransportError, ConnectionError)) or type(exc).__name__ == "APIConnectionError":
+        return "运行平台无法连接模型服务，请检查服务可用性和网络。（AI-NETWORK）"
+    if isinstance(exc, (ValidationError, ValueError)):
+        return "模型返回内容为空、不完整或不符合报告格式，请重试；持续出现时需检查模型兼容性。（AI-FORMAT）"
+    return "模型处理发生未分类异常，需要进一步检查调用兼容性。（AI-UNKNOWN）"
 
 
 class AI:
@@ -22,6 +55,12 @@ class AI:
 
     def generate(self, system, prompt, schema, images=None):
         self.store.reserve_call()
+        try:
+            return self._generate(system, prompt, schema, images)
+        except Exception as exc:
+            raise ModelError(error_message(exc)) from None
+
+    def _generate(self, system, prompt, schema, images=None):
         if self.provider == "openai":
             from openai import OpenAI
             content = [{"type":"input_text", "text":prompt}]
@@ -43,6 +82,8 @@ class AI:
             result = client.models.generate_content(model=self.model, contents=content,
                 config=types.GenerateContentConfig(system_instruction=system,
                     response_mime_type="application/json", response_schema=schema))
+            if not result.text:
+                raise ValueError("模型未返回可解析内容。")
             return schema.model_validate_json(result.text)
 
 

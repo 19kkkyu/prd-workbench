@@ -76,6 +76,7 @@ def compose_page(store):
             del inputs
             st.rerun()
         except Exception as exc:
+            status.update(label="提炼未完成",state="error")
             st.error(str(exc) if isinstance(exc,(ValueError,StorageError)) else error_message(exc))
     result=st.session_state.get('last_result')
     if result and result['project_id']==chosen:
