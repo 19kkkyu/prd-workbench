@@ -1,4 +1,12 @@
-from workbench.config import setting
+import time
+
+
+def http_status(exc):
+    code = getattr(exc, "status_code", None) or getattr(exc, "code", None)
+    try:
+        return int(code)
+    except (TypeError, ValueError):
+        return None
 
 class ModelError(Exception):
     """A safe diagnostic; never includes provider messages or document text."""
@@ -7,11 +15,7 @@ class ModelError(Exception):
 def error_message(exc):
     if isinstance(exc, ModelError):
         return str(exc)
-    code = getattr(exc, "status_code", None) or getattr(exc, "code", None)
-    try:
-        code = int(code)
-    except (TypeError, ValueError):
-        code = None
+    code = http_status(exc)
     # Inspect only structured, allowlisted reasons; never render response bodies.
     details = getattr(exc, "details", None) or getattr(exc, "body", None)
     if isinstance(details, dict):
@@ -45,7 +49,11 @@ def error_message(exc):
     if code in messages:
         return messages[code]
     if code is not None and 500 <= code <= 599:
-        return "模型服务暂时不可用，请稍后重试。（AI-SERVER）"
+        if code == 503:
+            return "模型服务繁忙或暂不可用，请稍后重试；持续出现时可在后台更换账号可用的模型。（AI-503）"
+        if code == 504:
+            return "模型服务端处理超时，请稍后重试；持续出现时可缩短单次内容或更换模型。（AI-504）"
+        return f"模型服务端发生错误，请稍后重试；持续出现时需检查模型服务状态。（AI-{code}）"
     import httpx
     from pydantic import ValidationError
     if isinstance(exc, (httpx.TimeoutException, TimeoutError)) or type(exc).__name__ == "APITimeoutError":
@@ -66,11 +74,19 @@ class AI:
             raise ValueError("请先配置模型名称和 API 密钥。")
 
     def generate(self, system, prompt, schema, images=None):
-        self.store.reserve_call()
-        try:
-            return self._generate(system, prompt, schema, images)
-        except Exception as exc:
-            raise ModelError(error_message(exc)) from None
+        for attempt in range(3):
+            self.store.reserve_call()
+            try:
+                return self._generate(system, prompt, schema, images)
+            except Exception as exc:
+                # Retry only transient server errors, with a strict total limit.
+                if http_status(exc) in (500, 502, 503, 504) and attempt < 2:
+                    time.sleep(2 ** (attempt + 1))
+                    continue
+                message = error_message(exc)
+                if attempt:
+                    message += f" 已自动重试 {attempt} 次，仍未完成。"
+                raise ModelError(message) from None
 
     def _generate(self, system, prompt, schema, images=None):
         if self.provider == "openai":
@@ -90,7 +106,8 @@ class AI:
         content = [types.Part.from_text(text=prompt)]
         if images:
             content += [types.Part.from_bytes(data=base64.b64decode(im["data"]), mime_type=im["mime"]) for im in images]
-        with genai.Client(api_key=self.key, http_options=types.HttpOptions(timeout=120000)) as client:
+        with genai.Client(api_key=self.key, http_options=types.HttpOptions(
+                timeout=120000, retry_options=types.HttpRetryOptions(attempts=1))) as client:
             result = client.models.generate_content(model=self.model, contents=content,
                 config=types.GenerateContentConfig(system_instruction=system,
                     response_mime_type="application/json", response_json_schema=schema.model_json_schema()))

@@ -3,7 +3,7 @@ import unittest
 from unittest.mock import patch
 
 import httpx
-from google.genai.errors import ClientError
+from google.genai.errors import ClientError, ServerError
 from pydantic import ValidationError
 
 from workbench.intelligence.client import AI, ModelError, error_message
@@ -74,3 +74,32 @@ class ModelErrorTests(unittest.TestCase):
         self.assertNotIn('responseSchema', config)
         self.assertEqual(config['responseJsonSchema']['additionalProperties'], False)
         self.assertEqual(config['responseJsonSchema']['required'], ['answer', 'sources'])
+
+    def test_transient_server_error_recovers_without_repeating_completed_work(self):
+        class Store:
+            calls = 0
+            def reserve_call(self): self.calls += 1
+        store = Store()
+        ai = AI(store, 'gemini', 'fixture', 'fixture')
+        success = Answer(answer='ok', sources=[])
+        with patch.object(ai, '_generate', side_effect=[ServerError(503, {}), success]) as generate, \
+                patch('workbench.intelligence.client.time.sleep') as sleep:
+            self.assertEqual(ai.generate('system', 'prompt', Answer), success)
+        self.assertEqual(store.calls, 2)
+        self.assertEqual(generate.call_count, 2)
+        sleep.assert_called_once_with(2)
+
+    def test_retry_is_bounded_and_client_errors_are_not_retried(self):
+        class Store:
+            calls = 0
+            def reserve_call(self): self.calls += 1
+        for code, attempts in ((503, 3), (400, 1), (429, 1)):
+            store = Store()
+            ai = AI(store, 'gemini', 'fixture', 'fixture')
+            error = ServerError(code, {}) if code == 503 else ClientError(code, {})
+            with patch.object(ai, '_generate', side_effect=error), patch('workbench.intelligence.client.time.sleep'):
+                with self.assertRaises(ModelError) as caught:
+                    ai.generate('system', 'prompt', Answer)
+            self.assertEqual(store.calls, attempts)
+            self.assertIn('AI-' + str(code), str(caught.exception))
+            if code == 503: self.assertIn('2 次', str(caught.exception))
