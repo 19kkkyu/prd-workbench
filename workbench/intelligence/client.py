@@ -1,3 +1,5 @@
+import json
+import re
 import time
 
 
@@ -72,15 +74,22 @@ class AI:
             raise ValueError("AI_PROVIDER 仅支持 openai 或 gemini。")
         if not self.key or not self.model:
             raise ValueError("请先配置模型名称和 API 密钥。")
+        self._use_prompt_json = False
 
     def generate(self, system, prompt, schema, images=None):
+        prompt_json = self._use_prompt_json
         for attempt in range(3):
             self.store.reserve_call()
             try:
-                return self._generate(system, prompt, schema, images)
+                result = self._generate(system, prompt, schema, images, prompt_json=prompt_json)
+                self._use_prompt_json = prompt_json
+                return result
             except Exception as exc:
-                # Retry only transient server errors, with a strict total limit.
-                if http_status(exc) in (500, 502, 503, 504) and attempt < 2:
+                status = http_status(exc)
+                if status in (500, 502, 503, 504) and attempt < 2:
+                    # Gemini can accept plain generation while rejecting schema-constrained requests.
+                    if self.provider == 'gemini' and status == 503:
+                        prompt_json = True
                     time.sleep(2 ** (attempt + 1))
                     continue
                 message = error_message(exc)
@@ -88,7 +97,7 @@ class AI:
                     message += f" 已自动重试 {attempt} 次，仍未完成。"
                 raise ModelError(message) from None
 
-    def _generate(self, system, prompt, schema, images=None):
+    def _generate(self, system, prompt, schema, images=None, *, prompt_json=False):
         if self.provider == "openai":
             from openai import OpenAI
             content = [{"type":"input_text", "text":prompt}]
@@ -106,13 +115,25 @@ class AI:
         content = [types.Part.from_text(text=prompt)]
         if images:
             content += [types.Part.from_bytes(data=base64.b64decode(im["data"]), mime_type=im["mime"]) for im in images]
+        json_schema = schema.model_json_schema()
+        if prompt_json:
+            system += ('\n输出必须是一个完整的 JSON 对象。不要添加 Markdown、注释或解释。'
+                       '遵守下列 JSON Schema 的字段、类型和必填要求，不添加额外字段：\n'
+                       + json.dumps(json_schema, ensure_ascii=False, separators=(',', ':')))
+            config = types.GenerateContentConfig(system_instruction=system)
+        else:
+            config = types.GenerateContentConfig(system_instruction=system,
+                response_mime_type="application/json", response_json_schema=json_schema)
         with genai.Client(api_key=self.key, http_options=types.HttpOptions(
                 timeout=120000, retry_options=types.HttpRetryOptions(attempts=1))) as client:
-            result = client.models.generate_content(model=self.model, contents=content,
-                config=types.GenerateContentConfig(system_instruction=system,
-                    response_mime_type="application/json", response_json_schema=schema.model_json_schema()))
-            if not result.text:
+            result = client.models.generate_content(model=self.model, contents=content, config=config)
+            response_text = result.text
+            if not response_text:
                 raise ValueError("模型未返回可解析内容。")
-            return schema.model_validate_json(result.text)
+            if prompt_json:
+                fence = re.fullmatch(r'\s*```(?:json)?\s*(.*?)\s*```\s*', response_text, re.DOTALL | re.IGNORECASE)
+                if fence:
+                    response_text = fence.group(1)
+            return schema.model_validate_json(response_text)
 
 

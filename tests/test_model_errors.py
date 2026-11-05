@@ -103,3 +103,39 @@ class ModelErrorTests(unittest.TestCase):
             self.assertEqual(store.calls, attempts)
             self.assertIn('AI-' + str(code), str(caught.exception))
             if code == 503: self.assertIn('2 次', str(caught.exception))
+
+    def test_gemini_503_falls_back_to_prompt_json_with_strict_validation(self):
+        from google import genai
+        original_client = genai.Client
+        requests = []
+        def handler(request):
+            requests.append(json.loads(request.content))
+            if len(requests) == 1:
+                return httpx.Response(503, json={'error': {'status': 'UNAVAILABLE'}})
+            text = ('```json\n{"answer":"ok","sources":[]}\n```' if len(requests) == 2
+                    else '{"answer":"ok","sources":[],"unexpected":"private"}')
+            return httpx.Response(200, json={'candidates': [{'content': {'role': 'model',
+                'parts': [{'text': text}]}, 'finishReason': 'STOP'}]})
+        def factory(**kwargs):
+            return original_client(api_key='offline-fixture', http_options={
+                'retry_options': {'attempts': 1},
+                'client_args': {'transport': httpx.MockTransport(handler)}})
+        class Store:
+            calls = 0
+            def reserve_call(self): self.calls += 1
+        store = Store()
+        ai = AI(store, 'gemini', 'gemini-3.5-flash-lite', 'fixture')
+        images = [{'mime': 'image/png', 'data': 'ZmFrZQ=='}]
+        with patch('google.genai.Client', side_effect=factory), patch('workbench.intelligence.client.time.sleep'):
+            self.assertEqual(ai.generate('system', 'prompt', Answer, images).answer, 'ok')
+            with self.assertRaises(ModelError) as caught:
+                ai.generate('system', 'next prompt', Answer)
+        self.assertEqual(store.calls, 3)
+        self.assertIn('responseJsonSchema', requests[0]['generationConfig'])
+        for req in requests[1:]:
+            self.assertNotIn('responseJsonSchema', req.get('generationConfig', {}))
+            self.assertNotIn('responseMimeType', req.get('generationConfig', {}))
+            self.assertIn('"required":["answer","sources"]', str(req['systemInstruction']))
+        self.assertEqual(requests[0]['contents'], requests[1]['contents'])
+        self.assertIn('AI-FORMAT', str(caught.exception))
+        self.assertNotIn('private', str(caught.exception))
